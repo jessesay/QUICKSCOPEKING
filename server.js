@@ -61,6 +61,17 @@ const GAME = {
   snapshotRate: 30
 };
 
+const WALL_INSET = 72;
+const SCOPED_FOV = .32;
+const HITBOX = {
+  bodyRadiusPad: 3,
+  bodyMinHeight: 8,
+  headMinHeight: 62,
+  headMaxHeight: 82,
+  obstaclePad: 4,
+  playerCollisionPad: 2
+};
+
 const STARTING_CREDITS = 1000;
 const VALID_WAGERS = new Set([0, 25, 50, 100, 250]);
 const players = new Map();
@@ -313,12 +324,29 @@ function pointInRect(x, y, rect) {
 
 function collidesObstacle(x, y, radius) {
   return MAP.obstacles.some(o => {
-    const closestX = Math.max(o.x, Math.min(x, o.x + o.w));
-    const closestY = Math.max(o.y, Math.min(y, o.y + o.h));
+    const pad = HITBOX.obstaclePad;
+    const closestX = Math.max(o.x - pad, Math.min(x, o.x + o.w + pad));
+    const closestY = Math.max(o.y - pad, Math.min(y, o.y + o.h + pad));
     const dx = x - closestX;
     const dy = y - closestY;
-    return dx * dx + dy * dy < radius * radius;
+    const collisionRadius = radius + HITBOX.playerCollisionPad;
+    return dx * dx + dy * dy < collisionRadius * collisionRadius;
   });
+}
+
+function clampInsideMap(mp) {
+  const minX = mp.r + WALL_INSET;
+  const maxX = MAP.width - mp.r - WALL_INSET;
+  const minY = mp.r + WALL_INSET;
+  const maxY = MAP.height - mp.r - WALL_INSET;
+  if (mp.x < minX || mp.x > maxX) {
+    mp.x = Math.max(minX, Math.min(maxX, mp.x));
+    mp.vx = 0;
+  }
+  if (mp.y < minY || mp.y > maxY) {
+    mp.y = Math.max(minY, Math.min(maxY, mp.y));
+    mp.vy = 0;
+  }
 }
 
 function moveCombatant(mp, dt) {
@@ -354,7 +382,7 @@ function moveCombatant(mp, dt) {
   let nx = mp.x + mp.vx * dt;
   let ny = mp.y + mp.vy * dt;
 
-  const boundary = 28;
+  const boundary = WALL_INSET;
   nx = Math.max(mp.r + boundary, Math.min(MAP.width - mp.r - boundary, nx));
   ny = Math.max(mp.r + boundary, Math.min(MAP.height - mp.r - boundary, ny));
 
@@ -362,6 +390,7 @@ function moveCombatant(mp, dt) {
   else mp.vx = 0;
   if (!collidesObstacle(mp.x, ny, mp.r)) mp.y = ny;
   else mp.vy = 0;
+  clampInsideMap(mp);
 }
 
 function distancePointToSegment(px, py, ax, ay, bx, by) {
@@ -390,21 +419,27 @@ function rayRectDistance(ax, ay, bx, by, rect) {
 }
 
 function obstacleHeight(type) {
-  return type === 'service-core' ? 118 : type === 'pipes' || type === 'solar' ? 32 : 42;
+  if (type === 'service-core') return 118;
+  if (type === 'office-frame') return 72;
+  if (type === 'hvac') return 48;
+  if (type === 'cargo' || type === 'generator') return 42;
+  if (type === 'scaffold' || type === 'solar') return 32;
+  if (type === 'pipes') return 30;
+  return 42;
 }
 
 function aimHeightAtDistance(pitch, distance) {
   const canvasWidth = 960;
   const canvasHeight = 540;
   const horizon = canvasHeight * .46 - pitch * canvasHeight * .55;
-  const scopedFocal = canvasWidth / (2 * Math.tan(.47 / 2));
+  const scopedFocal = canvasWidth / (2 * Math.tan(SCOPED_FOV / 2));
   return 42 - (canvasHeight / 2 - horizon) * distance / scopedFocal;
 }
 
 function shotBlockedBeforeTarget(ax, ay, bx, by, targetDistance, pitch) {
   return MAP.obstacles.some(o => {
     const hitDistance = rayRectDistance(ax, ay, bx, by, o);
-    if (hitDistance >= targetDistance - GAME.playerRadius) return false;
+    if (hitDistance >= targetDistance - HITBOX.bodyRadiusPad) return false;
     return aimHeightAtDistance(pitch, hitDistance) <= obstacleHeight(o.type);
   });
 }
@@ -440,10 +475,12 @@ function handleFire(socket) {
   const targetDistance = Math.hypot(target.x - ax, target.y - ay);
   const bodyAimDistance = distancePointToSegment(target.x, target.y, ax, ay, bx, by);
   const blocked = shotBlockedBeforeTarget(ax, ay, bx, by, targetDistance, shooter.pitch);
-  const horizontallyOnTarget = bodyAimDistance <= target.r + 4;
+  const horizontallyOnTarget = bodyAimDistance <= target.r + HITBOX.bodyRadiusPad;
   const aimHeight = aimHeightAtDistance(shooter.pitch, targetDistance);
-  const headshot = validQuickscope && !blocked && horizontallyOnTarget && aimHeight >= 64 && aimHeight <= 82;
-  const hit = validQuickscope && !blocked && horizontallyOnTarget && aimHeight >= 5 && aimHeight <= 82;
+  const headshot = validQuickscope && !blocked && horizontallyOnTarget
+    && aimHeight >= HITBOX.headMinHeight && aimHeight <= HITBOX.headMaxHeight;
+  const hit = validQuickscope && !blocked && horizontallyOnTarget
+    && aimHeight >= HITBOX.bodyMinHeight && aimHeight <= HITBOX.headMaxHeight;
   const points = headshot ? GAME.headshotPoints : hit ? 1 : 0;
 
   let reason = 'missed';
